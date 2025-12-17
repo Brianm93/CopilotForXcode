@@ -72,17 +72,10 @@ public actor RealtimeSuggestionController {
                         await self.triggerPrefetchDebounced()
                         await self.notifyEditingFileChange(editor: sourceEditor.element)
                     }
-
-                    if #available(macOS 13.0, *) {
-                        for await _ in valueChange._throttle(for: .milliseconds(200)) {
-                            if Task.isCancelled { return }
-                            await handler()
-                        }
-                    } else {
-                        for await _ in valueChange {
-                            if Task.isCancelled { return }
-                            await handler()
-                        }
+                    
+                    for await _ in valueChange {
+                        if Task.isCancelled { return }
+                        await handler()
                     }
                 }
                 group.addTask {
@@ -150,9 +143,10 @@ public actor RealtimeSuggestionController {
             ))
 
             if Task.isCancelled { return }
-
-            guard UserDefaults.shared.value(for: \.realtimeSuggestionToggle)
-            else { return }
+            
+            // check if user loggin
+            let authStatus = await Status.shared.getAuthStatus()
+            guard authStatus.status == .loggedIn else { return }
 
             if UserDefaults.shared.value(for: \.disableSuggestionFeatureGlobally),
                let fileURL = await XcodeInspector.shared.safe.activeDocumentURL,

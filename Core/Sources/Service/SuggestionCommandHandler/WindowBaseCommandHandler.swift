@@ -57,8 +57,21 @@ struct WindowBaseCommandHandler: SuggestionCommandHandler {
         if filespace.presentingSuggestion != nil {
             presenter.presentSuggestion(fileURL: fileURL)
             workspace.notifySuggestionShown(fileFileAt: fileURL)
+            presenter.discardNESSuggestion(fileURL: fileURL)
         } else {
             presenter.discardSuggestion(fileURL: fileURL)
+            try Task.checkCancellation()
+            
+            // When no code completion generated, fallback to NES
+            try await workspace.generateNESSuggestions(forFileAt: fileURL, editor: editor)
+            
+            try Task.checkCancellation()
+            
+            if filespace.presentingNESSuggestion != nil {
+                presenter.presentNESSuggestion(fileURL: fileURL)
+            } else {
+                presenter.discardNESSuggestion(fileURL: fileURL)
+            }
         }
     }
 
@@ -137,6 +150,28 @@ struct WindowBaseCommandHandler: SuggestionCommandHandler {
         workspace.rejectSuggestion(forFileAt: fileURL, editor: editor)
         presenter.discardSuggestion(fileURL: fileURL)
     }
+    
+    func rejectNESSuggestion(editor: EditorContent) async throws -> UpdatedContent? {
+        Task {
+            do {
+                try await _rejectNESSuggestion(editor: editor)
+            } catch {
+                presenter.presentError(error)
+            }
+        }
+        return nil
+    }
+    
+    @WorkspaceActor
+    private func _rejectNESSuggestion(editor: EditorContent) async throws {
+        guard let fileURL = await XcodeInspector.shared.safe.realtimeActiveDocumentURL
+        else { return }
+        
+        let (workspace, _) = try await Service.shared.workspacePool
+            .fetchOrCreateWorkspaceAndFilespace(fileURL: fileURL)
+        workspace.rejectNESSuggestion(forFileAt: fileURL, editor: editor)
+        presenter.discardNESSuggestion(fileURL: fileURL)
+    }
 
     @WorkspaceActor
     func acceptSuggestion(editor: EditorContent) async throws -> UpdatedContent? {
@@ -172,6 +207,41 @@ struct WindowBaseCommandHandler: SuggestionCommandHandler {
             )
         }
 
+        return nil
+    }
+    
+    @WorkspaceActor
+    func acceptNESSuggestion(editor: EditorContent) async throws -> UpdatedContent? {
+        guard let fileURL = await XcodeInspector.shared.safe.realtimeActiveDocumentURL
+        else { return nil }
+        let (workspace, _) = try await Service.shared.workspacePool
+            .fetchOrCreateWorkspaceAndFilespace(fileURL: fileURL)
+        
+        let injector = SuggestionInjector()
+        var lines = editor.lines
+        var cursorPosition = editor.cursorPosition
+        var extraInfo = SuggestionInjector.ExtraInfo()
+        
+        if let acceptedSuggestion = workspace.acceptNESSuggestion(
+            forFileAt: fileURL, editor: editor
+        ) {
+            injector.acceptSuggestion(
+                intoContentWithoutSuggestion: &lines,
+                cursorPosition: &cursorPosition,
+                completion: acceptedSuggestion,
+                extraInfo: &extraInfo,
+                isNES: true
+            )
+            
+            presenter.discardNESSuggestion(fileURL: fileURL)
+            
+            return .init(
+                content: String(lines.joined(separator: "")),
+                newSelection: .cursor(cursorPosition),
+                modifications: extraInfo.modifications
+            )
+        }
+        
         return nil
     }
 
@@ -431,43 +501,45 @@ extension WindowBaseCommandHandler {
         }.result
     }
 
+    // not used feature
+    // commit it to avoid init error for ChatService
     func executeSingleRoundDialog(
         systemPrompt: String?,
         overwriteSystemPrompt: Bool,
         prompt: String,
         receiveReplyInNotification: Bool
     ) async throws {
-        guard !prompt.isEmpty else { return }
-        let service = ChatService.service()
-
-        let result = try await service.handleSingleRoundDialogCommand(
-            systemPrompt: systemPrompt,
-            overwriteSystemPrompt: overwriteSystemPrompt,
-            prompt: prompt
-        )
-
-        guard receiveReplyInNotification else { return }
-
-        let granted = try await UNUserNotificationCenter.current()
-            .requestAuthorization(options: [.alert])
-
-        if granted {
-            let content = UNMutableNotificationContent()
-            content.title = "Reply"
-            content.body = result
-            let request = UNNotificationRequest(
-                identifier: "reply",
-                content: content,
-                trigger: nil
-            )
-            do {
-                try await UNUserNotificationCenter.current().add(request)
-            } catch {
-                presenter.presentError(error)
-            }
-        } else {
-            presenter.presentErrorMessage("Notification permission is not granted.")
-        }
+//        guard !prompt.isEmpty else { return }
+//        let service = ChatService.service()
+//
+//        let result = try await service.handleSingleRoundDialogCommand(
+//            systemPrompt: systemPrompt,
+//            overwriteSystemPrompt: overwriteSystemPrompt,
+//            prompt: prompt
+//        )
+//
+//        guard receiveReplyInNotification else { return }
+//
+//        let granted = try await UNUserNotificationCenter.current()
+//            .requestAuthorization(options: [.alert])
+//
+//        if granted {
+//            let content = UNMutableNotificationContent()
+//            content.title = "Reply"
+//            content.body = result
+//            let request = UNNotificationRequest(
+//                identifier: "reply",
+//                content: content,
+//                trigger: nil
+//            )
+//            do {
+//                try await UNUserNotificationCenter.current().add(request)
+//            } catch {
+//                presenter.presentError(error)
+//            }
+//        } else {
+//            presenter.presentErrorMessage("Notification permission is not granted.")
+//        }
     }
 }
 
